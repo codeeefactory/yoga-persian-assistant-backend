@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  yoga-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DEEPSEEK_API_KEY=sk-be84c4ea0d24481aab5940fe43e43449
+      - DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
