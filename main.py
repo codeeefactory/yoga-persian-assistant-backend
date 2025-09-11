@@ -15,7 +15,6 @@ import re
 import time
 from collections import defaultdict
 import aiohttp
-from database import db
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -199,12 +198,12 @@ class PDFExtractor:
             raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
     
     def analyze_yoga_content(self, text: str) -> List[Dict[str, Any]]:
-        """Enhanced analysis for yoga exercises with flexible content recognition"""
+        """Enhanced analysis for yoga exercises from table format with better Persian recognition"""
         exercises = []
         lines = text.split('\n')
         
         # Enhanced table structure patterns
-        table_headers = ['ردیف', 'نام حرکت', 'تصویر حرکت', 'شماره', 'نام', 'تصویر', 'حرکت', 'تمرین', 'یوگا']
+        table_headers = ['ردیف', 'نام حرکت', 'تصویر حرکت', 'شماره', 'نام', 'تصویر', 'حرکت']
         current_exercise = None
         in_table = False
         table_started = False
@@ -213,23 +212,14 @@ class PDFExtractor:
         persian_yoga_terms = [
             'مریچی', 'بوجانگ', 'شاشانگ', 'ساالمبا', 'چاکراسانا', 'پورنابوجانگاسانا',
             'سوپتاواجرآسانا', 'آردها', 'ستوبانداسانا', 'کهونی', 'نامان', 'تادآسانا',
-            'دروتااوتکاتاسانا', 'آسانا', 'یوگا', 'تمرین', 'حالت', 'وضعیت', 'حرکت',
-            'کشش', 'انعطاف', 'تعادل', 'قدرت', 'آرامش', 'مدیتیشن', 'تنفس'
+            'دروتااوتکاتاسانا', 'آسانا', 'یوگا', 'تمرین', 'حالت', 'وضعیت', 'حرکت'
         ]
         
         # Enhanced English yoga terms
         english_yoga_terms = [
             'marichi', 'bujangasana', 'shashangasana', 'salamba', 'chakrasana',
             'purna', 'supta', 'ardha', 'setu', 'konasana', 'tadasana', 'drotasana',
-            'asana', 'pose', 'exercise', 'yoga', 'position', 'movement', 'stretch',
-            'flexibility', 'balance', 'strength', 'relaxation', 'meditation', 'breathing'
-        ]
-        
-        # More flexible patterns for exercise detection
-        exercise_patterns = [
-            r'\d+\.?\s*[آ-ی]+',  # Number followed by Persian text
-            r'[آ-ی]+\s*\([a-zA-Z\s]+\)',  # Persian text with English in parentheses
-            r'[آ-ی]+\s*[آ-ی]+',  # Multiple Persian words
+            'asana', 'pose', 'exercise', 'yoga', 'position', 'movement'
         ]
         
         for i, line in enumerate(lines):
@@ -324,20 +314,7 @@ class PDFExtractor:
                 has_persian = any(term in line.lower() for term in persian_yoga_terms)
                 has_english = any(term in line.lower() for term in english_yoga_terms)
                 
-                # More flexible exercise detection
-                persian_chars = sum(1 for char in line if '\u0600' <= char <= '\u06FF')
-                total_chars = len(line)
-                
-                # Check if line looks like an exercise name
-                is_potential_exercise = (
-                    persian_chars > 2 and 
-                    total_chars > 3 and
-                    not line.isdigit() and
-                    not any(skip_word in line.lower() for skip_word in ['صفحه', 'تصویر', 'شماره', 'فهرست', 'محتوا']) and
-                    (has_persian or has_english or persian_chars > 5)
-                )
-                
-                if is_potential_exercise:
+                if has_persian or has_english:
                     # Extract names with enhanced logic
                     persian_name = line
                     english_name = ""
@@ -357,25 +334,10 @@ class PDFExtractor:
                     # Clean up names
                     persian_name = persian_name.replace('نام حرکت', '').replace('تصویر حرکت', '').strip()
                     
-                    # Calculate confidence based on content quality
-                    confidence = 0.6  # Base confidence for text extraction
-                    if has_persian and has_english:
-                        confidence = 0.8
-                    elif has_persian:
-                        confidence = 0.7
-                    elif persian_chars > 10:
-                        confidence = 0.65
-                    
-                    # Boost confidence for known yoga terms
+                    # Calculate confidence
+                    confidence = 0.7 if has_persian and has_english else 0.5
                     if any(term in persian_name.lower() for term in persian_yoga_terms):
-                        confidence = min(0.9, confidence + 0.1)
-                    
-                    # Determine difficulty based on name patterns
-                    difficulty = "intermediate"
-                    if any(term in persian_name.lower() for term in ['آسان', 'ساده', 'مبتدی']):
-                        difficulty = "beginner"
-                    elif any(term in persian_name.lower() for term in ['پیشرفته', 'سخت', 'پیچیده', 'حرفه']):
-                        difficulty = "advanced"
+                        confidence = min(0.8, confidence + 0.1)
                     
                     exercises.append({
                         "persian_name": persian_name,
@@ -383,85 +345,14 @@ class PDFExtractor:
                         "full_text": line,
                         "confidence": confidence,
                         "category": "Yoga Asana",
-                        "difficulty": difficulty,
-                        "source": "text_extraction",
-                        "line_index": i,
-                        "persian_char_count": persian_chars,
-                        "total_char_count": total_chars
-                    })
-        
-        # If no exercises found with normal methods, try aggressive fallback
-        if not exercises:
-            logger.info("No exercises found with normal methods, trying aggressive fallback...")
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Check for meaningful Persian text
-                persian_chars = sum(1 for char in line if '\u0600' <= char <= '\u06FF')
-                total_chars = len(line)
-                
-                # More aggressive criteria for exercise detection
-                if (persian_chars >= 3 and 
-                    total_chars >= 4 and 
-                    persian_chars / total_chars > 0.3 and  # At least 30% Persian
-                    not line.isdigit() and
-                    not any(skip_word in line.lower() for skip_word in [
-                        'صفحه', 'تصویر', 'شماره', 'فهرست', 'محتوا', 'کتاب', 'نویسنده',
-                        'انتشار', 'چاپ', 'سال', 'ماه', 'روز', 'تاریخ', 'زمان'
-                    ])):
-                    
-                    # Create exercise from this line
-                    persian_name = line
-                    english_name = ""
-                    
-                    # Try to extract English name
-                    if '(' in line and ')' in line:
-                        parts = line.split('(')
-                        persian_name = parts[0].strip()
-                        english_part = parts[1].split(')')[0].strip()
-                        if any(c.isalpha() for c in english_part):
-                            english_name = english_part
-                    elif '[' in line and ']' in line:
-                        parts = line.split('[')
-                        persian_name = parts[0].strip()
-                        english_part = parts[1].split(']')[0].strip()
-                        if any(c.isalpha() for c in english_part):
-                            english_name = english_part
-                    
-                    # Clean up the name
-                    persian_name = persian_name.strip()
-                    
-                    # Calculate confidence based on content
-                    confidence = 0.5  # Lower confidence for fallback
-                    if persian_chars > 10:
-                        confidence = 0.6
-                    if any(term in persian_name.lower() for term in persian_yoga_terms):
-                        confidence = 0.7
-                    
-                    exercises.append({
-                        "persian_name": persian_name,
-                        "english_name": english_name,
-                        "full_text": line,
-                        "confidence": confidence,
-                        "category": "Yoga Exercise",
                         "difficulty": "intermediate",
-                        "source": "aggressive_fallback",
-                        "line_index": i,
-                        "persian_char_count": persian_chars,
-                        "total_char_count": total_chars
+                        "source": "text_extraction",
+                        "line_index": i
                     })
         
         # Sort exercises by line index for better ordering
         exercises.sort(key=lambda x: x.get('line_index', 0))
         
-        # Limit to reasonable number of exercises (max 50 per page)
-        if len(exercises) > 50:
-            exercises = exercises[:50]
-            logger.info(f"Limited exercises to 50 from {len(exercises)} found")
-        
-        logger.info(f"Extracted {len(exercises)} exercises from text")
         return exercises
     
     def enhance_text_quality(self, text: str) -> Dict[str, Any]:
@@ -635,191 +526,6 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
-
-# Database endpoints
-@app.get("/database/stats")
-async def get_database_stats():
-    """Get database statistics"""
-    try:
-        stats = db.get_database_stats()
-        return JSONResponse(content={
-            "success": True,
-            "stats": stats
-        })
-    except Exception as e:
-        logger.error(f"Error getting database stats: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.get("/exercises")
-async def get_exercises(category: str = None, difficulty: str = None):
-    """Get exercises from database with optional filters"""
-    try:
-        exercises = db.get_exercises(category=category, difficulty=difficulty)
-        return JSONResponse(content={
-            "success": True,
-            "exercises": exercises,
-            "count": len(exercises)
-        })
-    except Exception as e:
-        logger.error(f"Error getting exercises: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.get("/exercises/{exercise_id}")
-async def get_exercise(exercise_id: int):
-    """Get a specific exercise by ID"""
-    try:
-        exercise = db.get_exercise_by_id(exercise_id)
-        if exercise:
-            steps = db.get_exercise_steps(exercise_id)
-            exercise['steps'] = steps
-            return JSONResponse(content={
-                "success": True,
-                "exercise": exercise
-            })
-        else:
-            return JSONResponse(
-                status_code=404,
-                content={"success": False, "error": "Exercise not found"}
-            )
-    except Exception as e:
-        logger.error(f"Error getting exercise: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.post("/exercises/save")
-async def save_exercise(exercise_data: dict):
-    """Save an exercise to the database"""
-    try:
-        exercise_id = db.save_exercise(exercise_data)
-        
-        # Save steps if provided
-        if 'steps' in exercise_data:
-            db.save_exercise_steps(exercise_id, exercise_data['steps'])
-        
-        # Save videos if provided
-        if 'videos' in exercise_data:
-            db.save_exercise_videos(exercise_id, exercise_data['videos'])
-        
-        # Save animations if provided
-        if 'animations' in exercise_data:
-            db.save_exercise_animations(exercise_id, exercise_data['animations'])
-        
-        return JSONResponse(content={
-            "success": True,
-            "exercise_id": exercise_id,
-            "message": "Exercise saved successfully"
-        })
-    except Exception as e:
-        logger.error(f"Error saving exercise: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.post("/favorites/add")
-async def add_to_favorites(request: dict):
-    """Add an exercise to favorites"""
-    try:
-        exercise_id = request.get('exercise_id')
-        if not exercise_id:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "exercise_id is required"}
-            )
-        
-        success = db.add_to_favorites(exercise_id)
-        return JSONResponse(content={
-            "success": success,
-            "message": "Added to favorites" if success else "Already in favorites"
-        })
-    except Exception as e:
-        logger.error(f"Error adding to favorites: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.delete("/favorites/remove")
-async def remove_from_favorites(request: dict):
-    """Remove an exercise from favorites"""
-    try:
-        exercise_id = request.get('exercise_id')
-        if not exercise_id:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "exercise_id is required"}
-            )
-        
-        success = db.remove_from_favorites(exercise_id)
-        return JSONResponse(content={
-            "success": success,
-            "message": "Removed from favorites" if success else "Not in favorites"
-        })
-    except Exception as e:
-        logger.error(f"Error removing from favorites: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.get("/favorites")
-async def get_favorites():
-    """Get user's favorite exercises"""
-    try:
-        favorites = db.get_favorites()
-        return JSONResponse(content={
-            "success": True,
-            "favorites": favorites,
-            "count": len(favorites)
-        })
-    except Exception as e:
-        logger.error(f"Error getting favorites: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.post("/progress/save")
-async def save_progress(progress_data: dict):
-    """Save user progress for an exercise session"""
-    try:
-        progress_id = db.save_user_progress(progress_data)
-        return JSONResponse(content={
-            "success": True,
-            "progress_id": progress_id,
-            "message": "Progress saved successfully"
-        })
-    except Exception as e:
-        logger.error(f"Error saving progress: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-@app.get("/progress")
-async def get_progress(exercise_id: int = None):
-    """Get user progress data"""
-    try:
-        progress = db.get_user_progress(exercise_id)
-        return JSONResponse(content={
-            "success": True,
-            "progress": progress,
-            "count": len(progress)
-        })
-    except Exception as e:
-        logger.error(f"Error getting progress: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
 
 @app.get("/quality-insights")
 async def get_quality_insights():
