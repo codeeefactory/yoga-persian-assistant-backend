@@ -199,12 +199,12 @@ class PDFExtractor:
             raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
     
     def analyze_yoga_content(self, text: str) -> List[Dict[str, Any]]:
-        """Enhanced analysis for yoga exercises from table format with better Persian recognition"""
+        """Enhanced analysis for yoga exercises with flexible content recognition"""
         exercises = []
         lines = text.split('\n')
         
         # Enhanced table structure patterns
-        table_headers = ['ردیف', 'نام حرکت', 'تصویر حرکت', 'شماره', 'نام', 'تصویر', 'حرکت']
+        table_headers = ['ردیف', 'نام حرکت', 'تصویر حرکت', 'شماره', 'نام', 'تصویر', 'حرکت', 'تمرین', 'یوگا']
         current_exercise = None
         in_table = False
         table_started = False
@@ -213,14 +213,23 @@ class PDFExtractor:
         persian_yoga_terms = [
             'مریچی', 'بوجانگ', 'شاشانگ', 'ساالمبا', 'چاکراسانا', 'پورنابوجانگاسانا',
             'سوپتاواجرآسانا', 'آردها', 'ستوبانداسانا', 'کهونی', 'نامان', 'تادآسانا',
-            'دروتااوتکاتاسانا', 'آسانا', 'یوگا', 'تمرین', 'حالت', 'وضعیت', 'حرکت'
+            'دروتااوتکاتاسانا', 'آسانا', 'یوگا', 'تمرین', 'حالت', 'وضعیت', 'حرکت',
+            'کشش', 'انعطاف', 'تعادل', 'قدرت', 'آرامش', 'مدیتیشن', 'تنفس'
         ]
         
         # Enhanced English yoga terms
         english_yoga_terms = [
             'marichi', 'bujangasana', 'shashangasana', 'salamba', 'chakrasana',
             'purna', 'supta', 'ardha', 'setu', 'konasana', 'tadasana', 'drotasana',
-            'asana', 'pose', 'exercise', 'yoga', 'position', 'movement'
+            'asana', 'pose', 'exercise', 'yoga', 'position', 'movement', 'stretch',
+            'flexibility', 'balance', 'strength', 'relaxation', 'meditation', 'breathing'
+        ]
+        
+        # More flexible patterns for exercise detection
+        exercise_patterns = [
+            r'\d+\.?\s*[آ-ی]+',  # Number followed by Persian text
+            r'[آ-ی]+\s*\([a-zA-Z\s]+\)',  # Persian text with English in parentheses
+            r'[آ-ی]+\s*[آ-ی]+',  # Multiple Persian words
         ]
         
         for i, line in enumerate(lines):
@@ -315,7 +324,20 @@ class PDFExtractor:
                 has_persian = any(term in line.lower() for term in persian_yoga_terms)
                 has_english = any(term in line.lower() for term in english_yoga_terms)
                 
-                if has_persian or has_english:
+                # More flexible exercise detection
+                persian_chars = sum(1 for char in line if '\u0600' <= char <= '\u06FF')
+                total_chars = len(line)
+                
+                # Check if line looks like an exercise name
+                is_potential_exercise = (
+                    persian_chars > 2 and 
+                    total_chars > 3 and
+                    not line.isdigit() and
+                    not any(skip_word in line.lower() for skip_word in ['صفحه', 'تصویر', 'شماره', 'فهرست', 'محتوا']) and
+                    (has_persian or has_english or persian_chars > 5)
+                )
+                
+                if is_potential_exercise:
                     # Extract names with enhanced logic
                     persian_name = line
                     english_name = ""
@@ -335,10 +357,25 @@ class PDFExtractor:
                     # Clean up names
                     persian_name = persian_name.replace('نام حرکت', '').replace('تصویر حرکت', '').strip()
                     
-                    # Calculate confidence
-                    confidence = 0.7 if has_persian and has_english else 0.5
+                    # Calculate confidence based on content quality
+                    confidence = 0.6  # Base confidence for text extraction
+                    if has_persian and has_english:
+                        confidence = 0.8
+                    elif has_persian:
+                        confidence = 0.7
+                    elif persian_chars > 10:
+                        confidence = 0.65
+                    
+                    # Boost confidence for known yoga terms
                     if any(term in persian_name.lower() for term in persian_yoga_terms):
-                        confidence = min(0.8, confidence + 0.1)
+                        confidence = min(0.9, confidence + 0.1)
+                    
+                    # Determine difficulty based on name patterns
+                    difficulty = "intermediate"
+                    if any(term in persian_name.lower() for term in ['آسان', 'ساده', 'مبتدی']):
+                        difficulty = "beginner"
+                    elif any(term in persian_name.lower() for term in ['پیشرفته', 'سخت', 'پیچیده', 'حرفه']):
+                        difficulty = "advanced"
                     
                     exercises.append({
                         "persian_name": persian_name,
@@ -346,14 +383,85 @@ class PDFExtractor:
                         "full_text": line,
                         "confidence": confidence,
                         "category": "Yoga Asana",
-                        "difficulty": "intermediate",
+                        "difficulty": difficulty,
                         "source": "text_extraction",
-                        "line_index": i
+                        "line_index": i,
+                        "persian_char_count": persian_chars,
+                        "total_char_count": total_chars
+                    })
+        
+        # If no exercises found with normal methods, try aggressive fallback
+        if not exercises:
+            logger.info("No exercises found with normal methods, trying aggressive fallback...")
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Check for meaningful Persian text
+                persian_chars = sum(1 for char in line if '\u0600' <= char <= '\u06FF')
+                total_chars = len(line)
+                
+                # More aggressive criteria for exercise detection
+                if (persian_chars >= 3 and 
+                    total_chars >= 4 and 
+                    persian_chars / total_chars > 0.3 and  # At least 30% Persian
+                    not line.isdigit() and
+                    not any(skip_word in line.lower() for skip_word in [
+                        'صفحه', 'تصویر', 'شماره', 'فهرست', 'محتوا', 'کتاب', 'نویسنده',
+                        'انتشار', 'چاپ', 'سال', 'ماه', 'روز', 'تاریخ', 'زمان'
+                    ])):
+                    
+                    # Create exercise from this line
+                    persian_name = line
+                    english_name = ""
+                    
+                    # Try to extract English name
+                    if '(' in line and ')' in line:
+                        parts = line.split('(')
+                        persian_name = parts[0].strip()
+                        english_part = parts[1].split(')')[0].strip()
+                        if any(c.isalpha() for c in english_part):
+                            english_name = english_part
+                    elif '[' in line and ']' in line:
+                        parts = line.split('[')
+                        persian_name = parts[0].strip()
+                        english_part = parts[1].split(']')[0].strip()
+                        if any(c.isalpha() for c in english_part):
+                            english_name = english_part
+                    
+                    # Clean up the name
+                    persian_name = persian_name.strip()
+                    
+                    # Calculate confidence based on content
+                    confidence = 0.5  # Lower confidence for fallback
+                    if persian_chars > 10:
+                        confidence = 0.6
+                    if any(term in persian_name.lower() for term in persian_yoga_terms):
+                        confidence = 0.7
+                    
+                    exercises.append({
+                        "persian_name": persian_name,
+                        "english_name": english_name,
+                        "full_text": line,
+                        "confidence": confidence,
+                        "category": "Yoga Exercise",
+                        "difficulty": "intermediate",
+                        "source": "aggressive_fallback",
+                        "line_index": i,
+                        "persian_char_count": persian_chars,
+                        "total_char_count": total_chars
                     })
         
         # Sort exercises by line index for better ordering
         exercises.sort(key=lambda x: x.get('line_index', 0))
         
+        # Limit to reasonable number of exercises (max 50 per page)
+        if len(exercises) > 50:
+            exercises = exercises[:50]
+            logger.info(f"Limited exercises to 50 from {len(exercises)} found")
+        
+        logger.info(f"Extracted {len(exercises)} exercises from text")
         return exercises
     
     def enhance_text_quality(self, text: str) -> Dict[str, Any]:
