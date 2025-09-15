@@ -59,6 +59,14 @@ class PDFExtractor:
                 'high': ['آسانا', 'یوگا', 'تمرین', 'حالت', 'وضعیت'],
                 'medium': ['حرکت', 'نرمش', 'کشش'],
                 'low': ['تصویر', 'شماره', 'صفحه']
+            },
+            'level_indicators': {
+                'level_1': ['سطح ۱', 'سطح یک', 'مرحله ۱', 'مرحله یک', 'بخش ۱', 'بخش یک'],
+                'level_2': ['سطح ۲', 'سطح دو', 'مرحله ۲', 'مرحله دو', 'بخش ۲', 'بخش دو'],
+                'level_3': ['سطح ۳', 'سطح سه', 'مرحله ۳', 'مرحله سه', 'بخش ۳', 'بخش سه'],
+                'beginner': ['مبتدی', 'آسان', 'ساده', 'اولیه', 'شروع'],
+                'intermediate': ['متوسط', 'میانی', 'معمولی'],
+                'advanced': ['پیشرفته', 'سخت', 'پیچیده', 'حرفه‌ای', 'تخصصی']
             }
         }
     
@@ -197,6 +205,58 @@ class PDFExtractor:
             logger.error(f"OCR extraction error: {e}")
             raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
     
+    def extract_level_information(self, text: str) -> Dict[str, Any]:
+        """Extract level information from text"""
+        level_info = {
+            "level": "سطح عمومی",
+            "level_number": None,
+            "level_type": "mixed",
+            "confidence": 0.5
+        }
+        
+        lines = text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Check for level indicators
+            for level_key, indicators in self.persian_patterns['level_indicators'].items():
+                for indicator in indicators:
+                    if indicator in line:
+                        if level_key.startswith('level_'):
+                            level_info["level"] = f"سطح {level_key.split('_')[1]}"
+                            level_info["level_number"] = level_key.split('_')[1]
+                            level_info["confidence"] = 0.9
+                        elif level_key in ['beginner', 'intermediate', 'advanced']:
+                            level_info["level"] = indicator
+                            level_info["level_type"] = level_key
+                            level_info["confidence"] = 0.8
+                        break
+                if level_info["confidence"] > 0.7:
+                    break
+        
+        # If no specific level found, try to infer from content
+        if level_info["confidence"] < 0.7:
+            beginner_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['beginner']))
+            intermediate_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['intermediate']))
+            advanced_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['advanced']))
+            
+            if advanced_count > intermediate_count and advanced_count > beginner_count:
+                level_info["level"] = "سطح پیشرفته"
+                level_info["level_type"] = "advanced"
+                level_info["confidence"] = 0.6
+            elif beginner_count > intermediate_count and beginner_count > advanced_count:
+                level_info["level"] = "سطح مبتدی"
+                level_info["level_type"] = "beginner"
+                level_info["confidence"] = 0.6
+            else:
+                level_info["level"] = "سطح متوسط"
+                level_info["level_type"] = "intermediate"
+                level_info["confidence"] = 0.5
+        
+        return level_info
+
     def analyze_yoga_content(self, text: str) -> List[Dict[str, Any]]:
         """Enhanced analysis for yoga exercises from table format with better Persian recognition"""
         exercises = []
@@ -614,6 +674,9 @@ async def extract_yoga_exercises(file: UploadFile = File(...)):
         # Analyze for yoga exercises
         exercises = pdf_extractor.analyze_yoga_content(all_text)
         
+        # Extract level information
+        level_info = pdf_extractor.extract_level_information(all_text)
+        
         # Structure response for frontend
         structured_exercises = []
         for i, exercise in enumerate(exercises):
@@ -651,6 +714,9 @@ async def extract_yoga_exercises(file: UploadFile = File(...)):
         for page in extraction_result["pages"]:
             all_images.extend(page["images"])
         
+        # Create level ID based on extracted information
+        level_id = f"level_{level_info['level_number']}" if level_info['level_number'] else f"level_{level_info['level_type']}"
+        
         return JSONResponse(content={
             "success": True,
             "title": "تمرینات یوگا - استخراج شده",
@@ -662,11 +728,13 @@ async def extract_yoga_exercises(file: UploadFile = File(...)):
             "totalImages": len(all_images),
             "extractionMethod": "Python FastAPI with PyMuPDF",
             "levels": [{
-                "id": "python_extracted_level",
-                "persianName": "تمرینات استخراج شده",
-                "englishName": "Extracted Exercises",
-                "description": "تمرینات استخراج شده با Python",
-                "difficulty": "mixed",
+                "id": level_id,
+                "level": level_info["level"],
+                "title": level_info["level"],
+                "persianName": level_info["level"],
+                "englishName": f"Level {level_info['level_number'] or level_info['level_type']}",
+                "description": f"تمرینات استخراج شده از {level_info['level']}",
+                "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
             }],
@@ -920,6 +988,10 @@ async def extract_enhanced_table(file: UploadFile = File(...)):
             "extraction_quality": "high"
         }
         
+        # Combine all text for level extraction
+        all_text = "\n".join([page["text"] for page in extraction_result["pages"]])
+        level_info = pdf_extractor.extract_level_information(all_text)
+        
         for page in extraction_result["pages"]:
             page_num = page["page_number"]
             text = page["text"]
@@ -1055,6 +1127,9 @@ async def extract_enhanced_table(file: UploadFile = File(...)):
                 "textQuality": "high" if exercise.get("persian_char_count", 0) > 5 else "medium" if exercise.get("persian_char_count", 0) > 2 else "low"
             })
         
+        # Create level ID based on extracted information
+        level_id = f"enhanced_level_{level_info['level_number']}" if level_info['level_number'] else f"enhanced_level_{level_info['level_type']}"
+        
         return JSONResponse(content={
             "success": True,
             "title": "تمرینات یوگا - استخراج پیشرفته",
@@ -1067,11 +1142,13 @@ async def extract_enhanced_table(file: UploadFile = File(...)):
             "extractionMethod": "Enhanced Python FastAPI with Advanced Table Analysis",
             "extractionStats": extraction_stats,
             "levels": [{
-                "id": "enhanced_extracted_level",
-                "persianName": "تمرینات استخراج شده پیشرفته",
-                "englishName": "Enhanced Extracted Exercises",
-                "description": "تمرینات استخراج شده با الگوریتم پیشرفته و تطبیق تصاویر",
-                "difficulty": "mixed",
+                "id": level_id,
+                "level": level_info["level"],
+                "title": level_info["level"],
+                "persianName": level_info["level"],
+                "englishName": f"Enhanced Level {level_info['level_number'] or level_info['level_type']}",
+                "description": f"تمرینات استخراج شده با الگوریتم پیشرفته از {level_info['level']}",
+                "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
             }],
@@ -1095,6 +1172,10 @@ async def extract_table_exercises(file: UploadFile = File(...)):
         # Process each page for table data
         all_exercises = []
         all_images = []
+        
+        # Combine all text for level extraction
+        all_text = "\n".join([page["text"] for page in extraction_result["pages"]])
+        level_info = pdf_extractor.extract_level_information(all_text)
         
         for page in extraction_result["pages"]:
             page_num = page["page_number"]
@@ -1212,6 +1293,9 @@ async def extract_table_exercises(file: UploadFile = File(...)):
                 "aiProcessed": True
             })
         
+        # Create level ID based on extracted information
+        level_id = f"table_level_{level_info['level_number']}" if level_info['level_number'] else f"table_level_{level_info['level_type']}"
+        
         return JSONResponse(content={
             "success": True,
             "title": "تمرینات یوگا - استخراج از جدول",
@@ -1223,11 +1307,13 @@ async def extract_table_exercises(file: UploadFile = File(...)):
             "totalImages": len(all_images),
             "extractionMethod": "Python FastAPI with Table Analysis",
             "levels": [{
-                "id": "table_extracted_level",
-                "persianName": "تمرینات استخراج شده از جدول",
-                "englishName": "Table-Extracted Exercises",
-                "description": "تمرینات استخراج شده از جدول با تصاویر",
-                "difficulty": "mixed",
+                "id": level_id,
+                "level": level_info["level"],
+                "title": level_info["level"],
+                "persianName": level_info["level"],
+                "englishName": f"Table Level {level_info['level_number'] or level_info['level_type']}",
+                "description": f"تمرینات استخراج شده از جدول {level_info['level']}",
+                "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
             }],
