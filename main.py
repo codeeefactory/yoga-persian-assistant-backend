@@ -206,10 +206,10 @@ class PDFExtractor:
             raise HTTPException(status_code=500, detail=f"OCR extraction failed: {str(e)}")
     
     def extract_level_information(self, text: str) -> Dict[str, Any]:
-        """Extract level information from text"""
+        """Extract level number from text"""
         level_info = {
-            "level": "سطح عمومی",
-            "level_number": None,
+            "level": "1",  # Default to level 1
+            "level_number": "1",
             "level_type": "mixed",
             "confidence": 0.5
         }
@@ -220,38 +220,92 @@ class PDFExtractor:
             if not line:
                 continue
                 
-            # Check for level indicators
-            for level_key, indicators in self.persian_patterns['level_indicators'].items():
-                for indicator in indicators:
-                    if indicator in line:
-                        if level_key.startswith('level_'):
-                            level_info["level"] = f"سطح {level_key.split('_')[1]}"
-                            level_info["level_number"] = level_key.split('_')[1]
-                            level_info["confidence"] = 0.9
-                        elif level_key in ['beginner', 'intermediate', 'advanced']:
-                            level_info["level"] = indicator
-                            level_info["level_type"] = level_key
-                            level_info["confidence"] = 0.8
-                        break
-                if level_info["confidence"] > 0.7:
+            # Check for level number indicators (Persian and English)
+            level_patterns = [
+                # Persian patterns with Persian digits
+                r'سطح\s*([۰-۹]+)',
+                r'مرحله\s*([۰-۹]+)',
+                r'بخش\s*([۰-۹]+)',
+                # Persian patterns with English digits
+                r'سطح\s*(\d+)',
+                r'مرحله\s*(\d+)',
+                r'بخش\s*(\d+)',
+                # Persian word patterns
+                r'سطح\s*(یک|دو|سه|چهار|پنج)',
+                r'مرحله\s*(یک|دو|سه|چهار|پنج)',
+                # English patterns
+                r'level\s*(\d+)',
+                r'stage\s*(\d+)',
+                r'section\s*(\d+)',
+                # Just numbers at the beginning of lines (Persian and English)
+                r'^([۰-۹]+)\s*[\.\-]',
+                r'^(\d+)\s*[\.\-]',
+                r'^([۰-۹]+)\s*$',
+                r'^(\d+)\s*$'
+            ]
+            
+            for pattern in level_patterns:
+                import re
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    level_num = match.group(1)
+                    
+                    # Convert Persian digits to English digits
+                    persian_digits = {
+                        '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+                        '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9'
+                    }
+                    
+                    # Convert Persian word numbers to digits
+                    persian_words = {
+                        'یک': '1', 'دو': '2', 'سه': '3', 'چهار': '4', 'پنج': '5',
+                        'شش': '6', 'هفت': '7', 'هشت': '8', 'نه': '9', 'ده': '10'
+                    }
+                    
+                    # Convert Persian digits
+                    if level_num in persian_digits:
+                        level_num = persian_digits[level_num]
+                    # Convert Persian words
+                    elif level_num in persian_words:
+                        level_num = persian_words[level_num]
+                    # Convert multi-digit Persian numbers
+                    else:
+                        converted = ''
+                        for char in level_num:
+                            if char in persian_digits:
+                                converted += persian_digits[char]
+                            else:
+                                converted += char
+                        level_num = converted
+                    
+                    level_info["level"] = level_num
+                    level_info["level_number"] = level_num
+                    level_info["confidence"] = 0.9
                     break
+            
+            if level_info["confidence"] > 0.8:
+                break
         
-        # If no specific level found, try to infer from content
+        # If no specific level number found, try to infer from content
         if level_info["confidence"] < 0.7:
+            # Look for difficulty indicators and map to level numbers
             beginner_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['beginner']))
             intermediate_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['intermediate']))
             advanced_count = sum(1 for line in lines if any(ind in line for ind in self.persian_patterns['level_indicators']['advanced']))
             
             if advanced_count > intermediate_count and advanced_count > beginner_count:
-                level_info["level"] = "سطح پیشرفته"
+                level_info["level"] = "3"
+                level_info["level_number"] = "3"
                 level_info["level_type"] = "advanced"
                 level_info["confidence"] = 0.6
             elif beginner_count > intermediate_count and beginner_count > advanced_count:
-                level_info["level"] = "سطح مبتدی"
+                level_info["level"] = "1"
+                level_info["level_number"] = "1"
                 level_info["level_type"] = "beginner"
                 level_info["confidence"] = 0.6
             else:
-                level_info["level"] = "سطح متوسط"
+                level_info["level"] = "2"
+                level_info["level_number"] = "2"
                 level_info["level_type"] = "intermediate"
                 level_info["confidence"] = 0.5
         
@@ -715,7 +769,7 @@ async def extract_yoga_exercises(file: UploadFile = File(...)):
             all_images.extend(page["images"])
         
         # Create level ID based on extracted information
-        level_id = f"level_{level_info['level_number']}" if level_info['level_number'] else f"level_{level_info['level_type']}"
+        level_id = f"level_{level_info['level_number']}"
         
         return JSONResponse(content={
             "success": True,
@@ -732,8 +786,8 @@ async def extract_yoga_exercises(file: UploadFile = File(...)):
                 "level": level_info["level"],
                 "title": level_info["level"],
                 "persianName": level_info["level"],
-                "englishName": f"Level {level_info['level_number'] or level_info['level_type']}",
-                "description": f"تمرینات استخراج شده از {level_info['level']}",
+                "englishName": f"Level {level_info['level_number']}",
+                "description": f"تمرینات سطح {level_info['level']}",
                 "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
@@ -1128,7 +1182,7 @@ async def extract_enhanced_table(file: UploadFile = File(...)):
             })
         
         # Create level ID based on extracted information
-        level_id = f"enhanced_level_{level_info['level_number']}" if level_info['level_number'] else f"enhanced_level_{level_info['level_type']}"
+        level_id = f"enhanced_level_{level_info['level_number']}"
         
         return JSONResponse(content={
             "success": True,
@@ -1146,8 +1200,8 @@ async def extract_enhanced_table(file: UploadFile = File(...)):
                 "level": level_info["level"],
                 "title": level_info["level"],
                 "persianName": level_info["level"],
-                "englishName": f"Enhanced Level {level_info['level_number'] or level_info['level_type']}",
-                "description": f"تمرینات استخراج شده با الگوریتم پیشرفته از {level_info['level']}",
+                "englishName": f"Enhanced Level {level_info['level_number']}",
+                "description": f"تمرینات سطح {level_info['level']} - استخراج پیشرفته",
                 "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
@@ -1294,7 +1348,7 @@ async def extract_table_exercises(file: UploadFile = File(...)):
             })
         
         # Create level ID based on extracted information
-        level_id = f"table_level_{level_info['level_number']}" if level_info['level_number'] else f"table_level_{level_info['level_type']}"
+        level_id = f"table_level_{level_info['level_number']}"
         
         return JSONResponse(content={
             "success": True,
@@ -1311,8 +1365,8 @@ async def extract_table_exercises(file: UploadFile = File(...)):
                 "level": level_info["level"],
                 "title": level_info["level"],
                 "persianName": level_info["level"],
-                "englishName": f"Table Level {level_info['level_number'] or level_info['level_type']}",
-                "description": f"تمرینات استخراج شده از جدول {level_info['level']}",
+                "englishName": f"Table Level {level_info['level_number']}",
+                "description": f"تمرینات سطح {level_info['level']} - استخراج از جدول",
                 "difficulty": level_info["level_type"],
                 "duration": "30-60 دقیقه",
                 "exercises": structured_exercises
